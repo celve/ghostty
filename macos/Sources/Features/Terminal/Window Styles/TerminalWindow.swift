@@ -172,6 +172,14 @@ class TerminalWindow: NSWindow {
 
         // Get our saved level
         level = UserDefaults.ghostty.value(forKey: Self.defaultLevelKey) as? NSWindow.Level ?? .normal
+
+        // Listen for config changes so we can update the tab bar mode at runtime
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(ghosttyConfigDidChange(_:)),
+            name: .ghosttyConfigDidChange,
+            object: nil
+        )
     }
 
     // Both of these must be true for windows without decorations to be able to
@@ -574,6 +582,35 @@ class TerminalWindow: NSWindow {
         standardWindowButton(.closeButton)?.isHidden = true
         standardWindowButton(.miniaturizeButton)?.isHidden = true
         standardWindowButton(.zoomButton)?.isHidden = true
+    }
+
+    @objc private func ghosttyConfigDidChange(_ notification: Notification) {
+        guard notification.object == nil else { return }
+        guard let config = notification.userInfo?[
+            Notification.Name.GhosttyConfigChangeKey
+        ] as? Ghostty.Config else { return }
+
+        let oldLocation = derivedConfig.macosTabsLocation
+        derivedConfig = .init(config)
+        let newLocation = derivedConfig.macosTabsLocation
+
+        guard oldLocation != newLocation else { return }
+
+        if oldLocation == .native && newLocation != .native {
+            // Switching FROM native: remove the native tab bar
+            removeNativeTabBar()
+        }
+        // Switching TO native: AppKit will re-add the tab bar on next
+        // tab group change now that derivedConfig is updated.
+    }
+
+    private func removeNativeTabBar() {
+        // Find and remove any tab bar accessory view controllers
+        for (index, vc) in titlebarAccessoryViewControllers.enumerated().reversed() {
+            if isTabBar(vc) {
+                removeTitlebarAccessoryViewController(at: index)
+            }
+        }
     }
 
     deinit {

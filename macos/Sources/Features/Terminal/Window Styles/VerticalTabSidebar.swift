@@ -65,9 +65,11 @@ struct VerticalTabSidebar: View {
                                     refreshTabs()
                                 }
                             )
+                            .transition(.opacity.combined(with: .scale(scale: 0.98)))
                         }
                     }
                     .padding(.vertical, 4)
+                    .animation(.easeInOut(duration: 0.2), value: tabModel.tabs.map(\.id))
                 }
                 
                 Divider()
@@ -100,6 +102,14 @@ struct VerticalTabSidebar: View {
         }
         .onDisappear {
             stopRefreshTimer()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
+            guard let keyWindow = notification.object as? NSWindow else { return }
+            guard let ourWindow = windowController?.window else { return }
+            // Only react if the key window is in our tab group
+            if let tabGroup = ourWindow.tabGroup, tabGroup.windows.contains(keyWindow) {
+                refreshTabs()
+            }
         }
         .sheet(isPresented: $isShowingRenameDialog) {
             RenameTabSheet(
@@ -280,7 +290,7 @@ struct VerticalTabSidebar: View {
                 
                 // Tab title
                 Text(title.isEmpty ? "Ghostty" : title)
-                    .font(.system(size: 12))
+                    .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .foregroundColor(isSelected ? .primary : .secondary)
@@ -305,6 +315,8 @@ struct VerticalTabSidebar: View {
                     .fill(isSelected ? Color.accentColor.opacity(0.2) : (isHovering ? Color.primary.opacity(0.05) : Color.clear))
             )
             .contentShape(Rectangle())
+            .animation(.easeInOut(duration: 0.15), value: isSelected)
+            .animation(.easeInOut(duration: 0.15), value: isHovering)
             .onTapGesture {
                 onSelect()
             }
@@ -376,22 +388,39 @@ struct VerticalTabSidebar: View {
     }
     
     private func selectTab(_ window: NSWindow) {
+        // Optimistically update selection state for instant visual feedback.
+        // TabData.id is based on window identity + title (not isSelected),
+        // so only the selection highlight changes — no row identity churn.
+        tabModel.tabs = tabModel.tabs.map { tab in
+            TabData(
+                window: tab.window,
+                index: tab.index,
+                isSelected: tab.window == window,
+                customTitles: tabModel.customTitles,
+                resolvedTitle: resolveTitle(for: tab.window, controller: tab.window.windowController as? BaseTerminalController)
+            )
+        }
+
         window.makeKeyAndOrderFront(nil)
-        refreshTabs()
+
+        // Sync with real OS state after it settles
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            refreshTabs()
+        }
     }
     
     private func closeTab(_ window: NSWindow) {
-        // If this is the only tab, close the window
-        if tabModel.tabs.count <= 1 {
-            window.close()
-            return
-        }
-        
-        // Otherwise just close this tab
-        window.close()
-        
-        // Refresh after a short delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+        // Delegate to the standard macOS close flow so that:
+        // - TerminalController.windowShouldClose checks for running processes
+        // - Confirmation dialog is shown if needed
+        // - Undo/redo state is registered
+        // - TabGroupCloseCoordinator handles tab-vs-window intent
+        window.performClose(nil)
+
+        // Refresh after a short delay to update sidebar state.
+        // If the close was cancelled (user declined confirmation), refreshTabs()
+        // will see no change and the guard at line 377 prevents a spurious update.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             refreshTabs()
         }
     }
